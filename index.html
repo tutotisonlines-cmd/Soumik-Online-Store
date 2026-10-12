@@ -2603,30 +2603,28 @@ document.addEventListener('click', function(event) {
  const root=document.createElement('div');root.id='soumikResetDialog';root.className='soumik-dialog-backdrop';
  root.innerHTML=`<section class="soumik-dialog" role="dialog" aria-modal="true" aria-labelledby="soumikResetTitle">
  <button class="soumik-close" type="button" onclick="soumikCloseReset()" aria-label="Close">✕</button>
- <h2 id="soumikResetTitle">🔐 Forgot Password</h2>
- <p class="muted">Owner ID, registered email and mobile number enter করুন। পাসওয়ার্ড রিসেটের নিরাপদ লিংক ইমেইলে যাবে।</p>
+ <h2 id="soumikResetTitle">🔐 Forgot Password?</h2>
+ <p class="muted">Enter the email address you used to register your SOUMIK ONLINE account. We'll email you a secure password reset link.</p>
  <form id="soumikResetRequest">
- <label>Owner ID<input name="ownerCode" required maxlength="20" placeholder="Owner ID লিখুন" autocomplete="off"></label>
- <label>Registered Email<input name="email" type="email" required autocomplete="email"></label>
- <label>Registered Mobile<input name="mobile" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" required autocomplete="tel"></label>
- <button class="btn" type="submit">Send Password Reset Email</button></form>
+ <label>Registered Email Address<input name="email" type="email" required autocomplete="email" placeholder="you@gmail.com"></label>
+ <button class="btn" type="submit">Send Reset Link</button></form>
  <p id="soumikResetFeedback" role="status" aria-live="polite"></p></section>`;
  document.body.appendChild(root);
  const form=root.querySelector('form'),feedback=root.querySelector('#soumikResetFeedback');
  form.addEventListener('submit',async e=>{
  e.preventDefault();const btn=form.querySelector('button');btn.disabled=true;
  try{
- const f=Object.fromEntries(new FormData(form));
- if(f.ownerCode!=='865K246')throw Error('Details could not be verified.');
- if(!/^\d{10}$/.test(f.mobile))throw Error('Enter a valid 10-digit mobile number.');
- if(!window.db)throw Error('Supabase connection unavailable');
- const {data:verified,error:verifyError}=await db.rpc('soumik_verify_owner_reset',{p_owner_code:f.ownerCode,p_email:f.email.trim().toLowerCase(),p_mobile:f.mobile});
- if(verifyError)throw Error('Database verification unavailable. Run the supplied SQL setup.');
- if(!verified)throw Error('Details could not be verified.');
- const {error}=await db.auth.resetPasswordForEmail(f.email.trim(),{redirectTo:location.origin+location.pathname});
+ const email=String(new FormData(form).get('email')||'').trim().toLowerCase();
+ if(!email||!form.reportValidity())return;
+ if(!db)throw Error('Supabase connection unavailable. Open the website over HTTPS and check your internet connection.');
+ if(location.protocol!=='https:'&&location.hostname!=='localhost')throw Error('Please open the hosted HTTPS website to request a reset link.');
+ const redirectTo=location.origin+location.pathname+'?soumik_reset=1';
+ const {error}=await db.auth.resetPasswordForEmail(email,{redirectTo});
  if(error)throw error;
- feedback.textContent='If this email is registered, a password-reset link will be sent. Check Inbox/Spam.';
- }catch(err){feedback.textContent=/rate limit|seconds|security purposes/i.test(err.message||'')?'Please wait before requesting another email.':err.message;}
+ feedback.style.color='#16713d';
+ feedback.textContent='If an account exists for this email, a password reset link will arrive shortly. Check your Inbox and Spam folder.';
+ form.reset();
+ }catch(err){feedback.style.color='#b42318';feedback.textContent=/rate limit|seconds|security purposes/i.test(err.message||'')?'Please wait before requesting another email.':(err.message||'Unable to send reset email.');}
  finally{btn.disabled=false}
  });
  root.addEventListener('click',e=>{if(e.target===root)window.soumikCloseReset()});
@@ -3115,6 +3113,54 @@ window.soumikOpenOwnerSettings=async function(){
  status.textContent=error?'Save failed: '+error.message:'✓ Settings saved to Supabase successfully.';
  };
 };
+})();
+</script>
+<script id="soumik-password-recovery-flow">
+(function(){
+ 'use strict';
+ const params=new URLSearchParams(location.search);
+ const hash=new URLSearchParams(location.hash.replace(/^#/,''));
+ const isRecovery=params.has('soumik_reset')||params.get('type')==='recovery'||hash.get('type')==='recovery';
+ if(!isRecovery)return;
+ function show(){
+  if(document.getElementById('soumikPasswordRecoveryDialog'))return;
+  const el=document.createElement('div');el.id='soumikPasswordRecoveryDialog';el.className='soumik-dialog-backdrop';
+  el.innerHTML=`<section class="soumik-dialog" role="dialog" aria-modal="true" aria-labelledby="soumikNewPasswordTitle">
+   <h2 id="soumikNewPasswordTitle">🔐 Set a New Password</h2>
+   <p class="muted">Enter your new password to secure your SOUMIK ONLINE account.</p>
+   <form id="soumikNewPasswordForm">
+    <label>New Password<input type="password" name="password" required minlength="8" autocomplete="new-password"></label>
+    <label>Confirm New Password<input type="password" name="confirm" required minlength="8" autocomplete="new-password"></label>
+    <button type="submit" class="btn">Update Password</button>
+   </form><p id="soumikNewPasswordFeedback" role="status" aria-live="polite"></p>
+   </section>`;
+  document.body.appendChild(el);
+  const form=el.querySelector('form'),msg=el.querySelector('#soumikNewPasswordFeedback');
+  form.onsubmit=async event=>{
+   event.preventDefault();const btn=form.querySelector('button');btn.disabled=true;
+   try{
+    const data=new FormData(form),pw=String(data.get('password')||'');
+    if(pw!==String(data.get('confirm')||''))throw Error('Passwords do not match.');
+    if(!db)throw Error('Supabase connection unavailable.');
+    const {data:auth,error:authError}=await db.auth.getUser();
+    if(authError||!auth.user)throw Error('Reset link is invalid or expired. Request a new password reset email.');
+    const {error}=await db.auth.updateUser({password:pw});if(error)throw error;
+    msg.style.color='#16713d';msg.textContent='✓ Password updated successfully. You can now log in with your new password.';
+    form.style.display='none';
+    history.replaceState({},'',location.pathname);
+    const close=document.createElement('button');close.className='btn';close.type='button';close.textContent='Continue to Login';close.onclick=async()=>{await db.auth.signOut();el.remove();if(typeof go==='function')go('adminlogin')};el.querySelector('section').appendChild(close);
+   }catch(error){msg.style.color='#b42318';msg.textContent=error.message||'Password update failed.';}
+   finally{btn.disabled=false}
+  };
+ }
+ async function start(){
+  if(!db)return;
+  if(params.get('error')||hash.get('error'))return;
+  const code=params.get('code');
+  if(code){const {error}=await db.auth.exchangeCodeForSession(code);if(error){alert('Password reset link is invalid or expired. Please request a new link.');return}}
+  show();
+ }
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);else start();
 })();
 </script>
 </body>
